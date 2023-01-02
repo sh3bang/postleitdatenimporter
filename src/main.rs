@@ -4,13 +4,14 @@ use std::io::BufReader;
 use std::io::prelude::*;
 use std::fs::File;
 
+use std::sync::Arc;
 use std::time::Instant;
 
+use elasticsearch::http::Url;
+use elasticsearch::http::transport::{SingleNodeConnectionPool, TransportBuilder};
 use serde_json::{json,Value};
 use elasticsearch::{Elasticsearch,BulkParts};
-use elasticsearch::http::{request::JsonBody,transport::Transport};
-
-use tokio::runtime;
+use elasticsearch::http::{request::JsonBody};
 
 
 /// Decoding table (CP850 to Unicode)
@@ -80,6 +81,7 @@ struct OtlDb {
 }
 
 // Straßen- und Straßenarchivdatei STRA-DB (Handbuch Seite 18)
+#[derive(Clone)]
 struct StraDb {
     str_alort: String,
     str_name46: String,
@@ -88,9 +90,9 @@ struct StraDb {
     str_kgs: String
 }
 
-//#[tokio::main]
-//async fn main() -> Result<(), Box<dyn std::error::Error>> {
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
 
@@ -184,24 +186,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     }
 
-    let transport = Transport::single_node("http://localhost:9200").unwrap();
+
+    
+    let url = Url::parse("http://localhost:9200")?;
+    let conn_pool = SingleNodeConnectionPool::new(url);
+    let transport = TransportBuilder::new(conn_pool).disable_proxy().build()?;
     let client = Elasticsearch::new(transport);
 
-    let mut c_iter  = stra_db.chunks(5000);
+    let client_arc = Arc::new(client);
 
-    let rt = runtime::Builder::new_current_thread().enable_io().enable_time().build()?;
+    let otl_db_arc = Arc::new(otl_db);
+    let ort_da_arc = Arc::new(ort_da);
+    let kgs_da_arc = Arc::new(kgs_da);
+
+
+
+    let chunk_size = 5000;
+    let mut at = stra_db.len();
     
-    rt.block_on(async {
-        while let Some(c) = c_iter.next() {
 
-            let mut bulk: Vec<JsonBody<_>> = Vec::with_capacity(c.len()*2);
+    loop {
 
-            let mut f_iter = c.iter();
+        if at > chunk_size {
+            at -= chunk_size;
+        } else if at == 0 {
+            break;
+        } else {
+            at = 0;
+        }
+        
+        
+        let chunk = stra_db.split_off(at);
+        
+        let client_arc = Arc::clone(&client_arc);
+
+        let otl_db_arc = Arc::clone(&otl_db_arc);
+        let ort_da_arc = Arc::clone(&ort_da_arc);
+        let kgs_da_arc = Arc::clone(&kgs_da_arc);
+
+        tokio::spawn( async move {
+
+            
+            let mut bulk: Vec<JsonBody<_>> = Vec::new();         
+            let mut f_iter = chunk.iter();
+            
             while let Some(f) = f_iter.next() {
 
                 let rel_otl_db = {
                     if f.str_otl_schl.is_empty() {
-                        otl_db.get(&format!("{}{}{}G", f.str_alort, f.str_otl_schl, f.str_plz)) // G = gültiger Ortsteil
+                        otl_db_arc.get(&format!("{}{}{}G", f.str_alort, f.str_otl_schl, f.str_plz)) // G = gültiger Ortsteil
                     } else {
                         None
                     }
@@ -209,7 +242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let rel_ort_da = {
                     if f.str_otl_schl.is_empty() {
-                        ort_da.get(&format!("{}G",f.str_alort)) // G = gültiger Orts-Satz
+                        ort_da_arc.get(&format!("{}G",f.str_alort)) // G = gültiger Orts-Satz
                     } else {
                         None
                     }
@@ -240,28 +273,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Some(v) => Value::String(v.otl_name.clone()),
                         None => Value::Null
                     },
-                    "community": match kgs_da.get(&kgs_g) {
+                    "community": match kgs_da_arc.get(&kgs_g) {
                         Some(v) => Value::String(v.kg_name.clone()),
                         None => Value::Null
                     },
-                    "country": match kgs_da.get(&kgs_k) {
+                    "country": match kgs_da_arc.get(&kgs_k) {
                         Some(v) => Value::String(v.kg_name.clone()),
                         None => Value::Null
                     },
-                    "district": match kgs_da.get(&kgs_r) {
+                    "district": match kgs_da_arc.get(&kgs_r) {
                         Some(v) => Value::String(v.kg_name.clone()),
                         None => Value::Null
                     },
-                    "state": match kgs_da.get(&kgs_l) {
+                    "state": match kgs_da_arc.get(&kgs_l) {
                         Some(v) => Value::String(v.kg_name.clone()),
                         None => Value::Null
                     },
                 }).into());
-
-            };  
-
+            };
             
-            let response = client
+            let response = client_arc
             .bulk(BulkParts::Index("addresses"))
             .body(bulk)
             .send()
@@ -269,11 +300,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap();
             
             let response_body = response.json::<Value>().await.unwrap();
-            let _successful = response_body["errors"].as_bool().unwrap() == false;
+            println!("{}",response_body["took"]);
+            //let _successful = response_body["errors"].as_bool().unwrap() == false;
+        })
+        .await
+        .unwrap();
+        
 
-        };
+    };
 
-    });
 
 
     let elapsed = start.elapsed();
