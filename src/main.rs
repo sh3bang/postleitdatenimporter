@@ -1,7 +1,8 @@
+use std::collections::{HashMap};
+
 use std::io::BufReader;
 use std::io::prelude::*;
 use std::fs::File;
-use rustc_hash::FxHashMap;
 
 use std::time::Instant;
 
@@ -103,9 +104,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut eol: i64 = 0;
 
-    let mut kgs_da = FxHashMap::default();
-    let mut ort_da = FxHashMap::default();
-    let mut otl_db = FxHashMap::default();
+    let mut kgs_da = HashMap::with_capacity(12000);
+    let mut ort_da = HashMap::with_capacity(77000);
+    let mut otl_db = HashMap::with_capacity(13200);
     let mut stra_db = Vec::with_capacity(1300000);
 
     while reader.read_until(b'$', &mut buf)? > 0 {
@@ -186,7 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport = Transport::single_node("http://localhost:9200").unwrap();
     let client = Elasticsearch::new(transport);
 
-    let mut c_iter  = stra_db.chunks(50000);
+    let mut c_iter  = stra_db.chunks(5000);
 
     let rt = runtime::Builder::new_current_thread().enable_io().enable_time().build()?;
     
@@ -267,8 +268,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .unwrap();
             
-            let _response_body = response.json::<Value>().await.unwrap();
-            //let _successful = response_body["errors"].as_bool().unwrap() == false;
+            let response_body = response.json::<Value>().await.unwrap();
+            let _successful = response_body["errors"].as_bool().unwrap() == false;
 
         };
 
