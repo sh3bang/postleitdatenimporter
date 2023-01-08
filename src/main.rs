@@ -187,7 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport = Transport::single_node("http://localhost:9200").unwrap();
     let client = Elasticsearch::new(transport);
 
-    let mut c_iter  = stra_db.chunks(5000);
+    let mut c_iter  = stra_db.chunks(50000);
 
     let rt = runtime::Builder::new_current_thread().enable_io().enable_time().build()?;
     
